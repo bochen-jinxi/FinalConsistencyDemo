@@ -4,7 +4,7 @@ using Microsoft.Extensions.Hosting;
 namespace FinalConsistencyDemo
 {
     public class Program
-    {
+    { 
         public static void Main(string[] args)
             => CreateHostBuilder(args).Build().Run();
 
