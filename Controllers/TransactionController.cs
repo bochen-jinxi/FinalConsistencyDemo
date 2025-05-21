@@ -7,48 +7,46 @@ using Microsoft.EntityFrameworkCore;
 using System;
 using System.Threading.Tasks;
 
-namespace FinalConsistencyDemo.Controllers
+namespace FinalConsistencyDemo.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class TransactionController : ControllerBase
 {
-    [ApiController]
-    [Route("api/[controller]")]
-    public class TransactionController : ControllerBase
+    private readonly CentralDbContext _central;
+    private readonly ICapPublisher _cap;
+
+    public TransactionController(CentralDbContext central, ICapPublisher cap)
     {
-        private readonly CentralDbContext _central;
-        private readonly ICapPublisher _cap;
+        _central = central;
+        _cap = cap;
+    }
 
-        public TransactionController(CentralDbContext central, ICapPublisher cap)
+    [HttpPost("transfer")]
+    public async Task<IActionResult> Transfer(string from, string to, decimal amount)
+    {
+        var tranId = Guid.NewGuid().ToString("N");
+        // 让 CAP 托管 EF Core 的事务
+        using var tran = _central.Database.BeginTransaction(_cap);
+        
+        _central.TranLogs.Add(new TranLog
         {
-            _central = central;
-            _cap = cap;
-        }
+            TranId = tranId,
+            FromAccount = from,
+            ToAccount = to,
+            Amount = amount
+        });
 
-        [HttpPost("transfer")]
-        public async Task<IActionResult> Transfer(string from, string to, decimal amount)
-        {
-            var tranId = Guid.NewGuid().ToString("N");
-            // 用 CAP 扩展的事务，SaveChanges 后自动 Publish
-            using var tran = await _central.Database.BeginTransactionAsync();
+        _central.MessageQueues.Add(new MessageQueue { TranId = tranId, Account = from, Delta = -amount, Type = "DEBIT" });
+        _central.MessageQueues.Add(new MessageQueue { TranId = tranId, Account = to, Delta = +amount, Type = "CREDIT" });
 
-            _central.TranLogs.Add(new TranLog
-            {
-                TranId = tranId,
-                FromAccount = from,
-                ToAccount = to,
-                Amount = amount
-            });
-            
-            _central.MessageQueues.Add(new MessageQueue { TranId = tranId, Account = from, Delta = -amount, Type = "DEBIT" });
-            _central.MessageQueues.Add(new MessageQueue { TranId = tranId, Account = to, Delta = +amount, Type = "CREDIT" });
+        await _central.SaveChangesAsync();
 
+        // 发布两条逻辑消息到 RabbitMQ
+        await _cap.PublishAsync("finance.debit", new { TranId = tranId, Account = from, Delta = -amount });
+        await _cap.PublishAsync("finance.credit", new { TranId = tranId, Account = to, Delta = amount });
 
-
-            await _central.SaveChangesAsync();
-
-            // 发布两条逻辑消息到 RabbitMQ
-            await _cap.PublishAsync("finance.debit", new { TranId = tranId, Account = from, Delta = -amount });
-            await _cap.PublishAsync("finance.credit", new { TranId = tranId, Account = to, Delta = amount });
-            await tran.CommitAsync();
-            return Ok(new { TranId = tranId });
-        }
+        await tran.CommitAsync();
+        return Ok(new { TranId = tranId });
     }
 }
