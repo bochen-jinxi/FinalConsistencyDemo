@@ -28,7 +28,10 @@ public class TransactionController : ControllerBase
         var tranId = Guid.NewGuid().ToString("N");
         // 让 CAP 托管 EF Core 的事务
         using var tran = _central.Database.BeginTransaction(_cap);
-        
+        try
+        {
+
+       
         _central.TranLogs.Add(new TranLog
         {
             TranId = tranId,
@@ -46,7 +49,13 @@ public class TransactionController : ControllerBase
         await _cap.PublishAsync("finance.debit", new { TranId = tranId, Account = from, Delta = -amount });
         await _cap.PublishAsync("finance.credit", new { TranId = tranId, Account = to, Delta = amount });
 
+
         await tran.CommitAsync();
+        }
+        catch (Exception e)
+        {
+            await tran.RollbackAsync();
+        }
         return Ok(new { TranId = tranId });
     }
 }
